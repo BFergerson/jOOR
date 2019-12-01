@@ -637,6 +637,14 @@ public class Reflect {
         }
         while (t != null);
 
+        // search by name alone
+        t = type();
+        for (Method method : t.getMethods()) {
+            if (method.getName().equals(name)) {
+                return method;
+            }
+        }
+
         throw new NoSuchMethodException("No similar method " + name + " with params " + Arrays.toString(types) + " could be found on type " + type() + ".");
     }
 
@@ -720,8 +728,20 @@ public class Reflect {
      */
     @SuppressWarnings("unchecked")
     public <P> P as(final Class<P> proxyType) {
+        return as(proxyType, proxyType.getClassLoader());
+    }
+
+    /**
+     * Create a proxy for the wrapped object allowing to typesafely invoke
+     * methods on it using a custom interface
+     *
+     * @param proxyType The interface type that is implemented by the proxy
+     * @return A proxy for the wrapped object
+     */
+    @SuppressWarnings("unchecked")
+    public <P> P as(final Class<P> proxyType, ClassLoader classLoader) {
         final boolean isMap = (object instanceof Map);
-        final InvocationHandler handler = new InvocationHandler() {
+        final InvocationHandler handler = new ProxyInvocationHandler() {
             @Override
             @SuppressWarnings("null")
             public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
@@ -729,7 +749,14 @@ public class Reflect {
 
                 // Actual method name matches always come first
                 try {
-                    return on(type, object).call(name, args).get();
+                    if (proxy instanceof ProxyObject) {
+                        ((ProxyArgumentsConverter) on(proxy).field("PROXY_ARGUMENTS_CONVERTER").get())
+                                .convertArguments(name, args);
+                        return ((ProxyValueConverter) on(proxy).field("PROXY_VALUE_CONVERTER").get())
+                                .convertValue(name, on(type, object).call(name, args).get());
+                    } else {
+                        return on(type, object).call(name, args).get();
+                    }
                 }
 
                 // [#14] Emulate POJO behaviour on wrapped map objects
@@ -779,7 +806,9 @@ public class Reflect {
             }
         };
 
-        return (P) Proxy.newProxyInstance(proxyType.getClassLoader(), new Class[] { proxyType }, handler);
+        Object instance = Proxy.newProxyInstance(classLoader, new Class[] { proxyType }, handler);
+        ((ProxyInvocationHandler) Proxy.getInvocationHandler(instance)).setUnderlyingObject(object);
+        return (P) instance;
     }
 
     /**
@@ -995,4 +1024,24 @@ public class Reflect {
     }
 
     private static class NULL {}
+
+    public interface ProxyObject {
+    }
+    public interface ProxyValueConverter {
+        Object convertValue(String name, Object object);
+    }
+    public interface ProxyArgumentsConverter {
+        void convertArguments(String name, Object[] args);
+    }
+    public abstract static class ProxyInvocationHandler implements InvocationHandler {
+        private Object underlyingObject;
+
+        public void setUnderlyingObject(Object underlyingObject) {
+            this.underlyingObject = underlyingObject;
+        }
+
+        public Object getUnderlyingObject() {
+            return underlyingObject;
+        }
+    }
 }
